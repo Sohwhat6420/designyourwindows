@@ -10,6 +10,7 @@ out/
 *.jpeg
 *.webp
 !docs/screens/*.png
+!docs/screens/*.webp
 
 # Build output
 bin/

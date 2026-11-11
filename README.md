@@ -1,57 +1,65 @@
 # designyourwindows
 
+**Your own wallpaper with the clock behind its subject: the iPhone depth-clock look on Windows, from one 62 KB exe.**
+
 [![build](https://github.com/Sohwhat6420/designyourwindows/actions/workflows/build.yml/badge.svg)](https://github.com/Sohwhat6420/designyourwindows/actions/workflows/build.yml)
 ![licence: MIT](https://img.shields.io/badge/licence-MIT-blue)
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
-![exe: 62 KB](https://img.shields.io/badge/exe-62%20KB-555)
-![idle CPU: 0.06% of one core](https://img.shields.io/badge/idle%20CPU-0.06%25%20of%20one%20core-2ea44f)
 
-A clock behind the subject of your own wallpaper, frosted-glass widgets and a macOS-style dock, for Windows 10 and 11.
-One 62 KB native exe and one Python script. No browser, no web view, no live-wallpaper engine: the wallpaper is an
-ordinary bitmap that Windows draws as it always does.
+<img src="docs/screens/hero-f22.webp" width="100%" alt="A Windows desktop: an oil painting of two F-22s over snow-capped mountains at dusk. The time, 09:41, sits behind the nearer jet and the peaks; a calendar and a battery panel in frosted glass sit top right, and a dock of Windows apps sits at the bottom.">
 
-![The desktop in minute mode: the time sits behind the mountain, with the calendar, battery and weather widgets on the right and the dock at the bottom](docs/screens/desktop-minute.png)
+<sub>One frame from the exe's own <code>--render</code>, 2560 × 1440. The painting is an oil-paint repaint, made with
+an image model, of a public-domain U.S. Air Force photo
+(<a href="https://commons.wikimedia.org/wiki/File:F-22_Raptor_pair_over_Alaska_-_081010-F-1234X-924.jpg">F-22 Raptors over Alaska</a>);
+no endorsement by the U.S. Air Force is implied.</sub>
 
-*Minute mode at 1920 × 1080. The time, date, battery and weather are real readings taken when the frame was drawn.
-The dock in this image is the exe's own preview render of the dock window (see [Screenshots](#screenshots)).*
+- **It is an ordinary wallpaper.** There is no browser, web view or live-wallpaper engine. Windows draws a plain bitmap, and
+  once a minute the exe rewrites only the strip of pixels behind the time.
+- **0.057 % of one core.** Once a minute it redraws the strip behind the time, then sleeps on a kernel timer. Static mode leaves no
+  process running at all ([measurements](#measurements)).
+- **It undoes itself.** One per-user scheduled task and no administrator rights; `--uninstall` puts your previous
+  wallpaper back.
 
-![Static mode: the word HELLO behind the mountain, with only the calendar](docs/screens/desktop-static.png)
+## Quick start (about 5 minutes; the first cut downloads about 320 MB of models)
 
-*Static mode: your own text, drawn once. Nothing is left running, so the frame shows only what cannot go stale
-before midnight: the calendar.*
+```powershell
+git clone https://github.com/Sohwhat6420/designyourwindows; cd designyourwindows
+powershell -ExecutionPolicy Bypass -File .\build.ps1   # writes bin\designyourwindows.exe with Windows' own compiler
+python -I make-layers.py C:\path\to\your-image.jpg     # cuts your image (needs the two models: see Install)
+.\bin\designyourwindows.exe --install                  # runs now and at every sign-in
+```
 
-| Widgets | Dock |
-| --- | --- |
-| ![Calendar, battery and weather widgets on frosted glass](docs/screens/widgets.png) | ![The dock with Windows' own app icons](docs/screens/dock-preview.png) |
+## How it works
 
-![How the depth effect is made: the image, the cut-out subject, and the result with text between them](docs/screens/layers.png)
-
-*The image, the cut-out (subject plus the ground nearer than the sky) and the result: the text is drawn between them.*
-
-## What it does
-
-1. **Depth effect.** `make-layers.py` cuts your image into a plate and a foreground at your screen's size, using two
-   small models on the CPU. The exe draws the clock (or your text) on the plate and the foreground over it, so the
-   subject stands in front of the time.
-2. **macOS aesthetic.** Frosted-glass panels cut from a pre-blurred copy of your own wallpaper, Segoe UI Variable
-   (Windows' own typeface) on a real type scale, hairline edges and soft shadows; a borderless dock with rounded
-   corners and DWM acrylic.
-3. **Glass widgets.** The date, a month calendar (Monday first, today in red, ISO week number) and the battery.
-   Weather is off by default; turn it on and it reads [Open-Meteo](https://open-meteo.com), which needs no key, for
-   the latitude and longitude in `config.json`. Nothing personal is read or shown: no accounts, no events, no
-   location lookup.
-
-### Two modes, one switch
-
-`"mode"` in `config.json`:
-
-| Mode | What runs | What you see |
+| 1. Your image | 2. The cut | 3. The frame |
 | --- | --- | --- |
-| `"minute"` (default) | one small background process: it redraws the time strip once a minute and keeps the dock | the time and date behind the subject, calendar, battery, weather if on, the dock |
-| `"static"` | nothing: the exe draws one frame, sets it as the wallpaper and exits | your text (or the date) behind the subject and the calendar; no dock |
+| <img src="docs/screens/layer-1-plate.webp" alt="The painting on its own"> | <img src="docs/screens/layer-2-cut.webp" alt="Only the two jets and the peaks remain, on a checkerboard"> | <img src="docs/screens/layer-3-result.webp" alt="The finished frame with the time drawn between the sky and the jets"> |
+
+`make-layers.py` runs once per image. Two small models on the CPU find the subject
+([BiRefNet](https://github.com/ZhengPeng7/BiRefNet)) and everything nearer than the sky
+([Depth Anything V2 Small](https://github.com/DepthAnything/Depth-Anything-V2)). The script then places the clock where
+the cut covers part of the digits but none of their top half (16 % of the box in this frame), and takes the clock
+colour from the sky behind it. The exe draws the plate, then the time, then the cut over it.
+
+The frosted panels are cut from a blurred copy of the same image, made once, so they cost nothing at run time and
+look like glass because they really are the picture behind them. The dock is the only live surface; its blur comes
+from the desktop compositor on the GPU, not from this process.
+
+### Two modes
+
+| Minute mode | Static mode |
+| --- | --- |
+| <img src="docs/screens/layer-3-result.webp" alt="Minute mode: the time behind the jets, the calendar, battery and dock"> | <img src="docs/screens/static-f22.webp" alt="Static mode: the date, 11 November, behind the nearer jet, with only the calendar panel"> |
+
+| `"mode"` in `config.json` | What runs | What you see |
+| --- | --- | --- |
+| `"minute"` (default) | one small process that redraws the time strip once a minute and keeps the dock | the time and date behind the subject, the calendar, the battery, the weather if you turn it on, the dock |
+| `"static"` | nothing: the exe draws one frame, sets it and exits | your own text, or the date, behind the subject, and the calendar |
 
 In static mode, `--install` also re-renders at 00:00:30 every day so the date and calendar stay right. Battery and
-weather are left out of the static frame on purpose: a frame drawn once would show a reading that is soon wrong.
+weather are left out of the static frame on purpose: a frame drawn once would soon show a stale reading. Weather is off
+by default; turned on, it reads [Open-Meteo](https://open-meteo.com) (no key) for the latitude and longitude in
+`config.json`. Nothing personal is read or shown: no accounts, no events, no location lookup.
 
 ## Install
 
@@ -89,8 +97,8 @@ size in physical pixels. Options: `--size 2560x1440` for another size,
 for a narrower clock box. A landscape image with a clear subject in the lower half and sky above works best; the
 script places the clock box where the subject covers the lower part of the digits and leaves them readable.
 
-No image to hand? `python -I make-layers.py --sample sample.png` draws the procedural mountain used in these
-screenshots; run it through `make-layers.py` like any other image.
+No image to hand? `python -I make-layers.py --sample sample.png` draws a procedural mountain to try it on; run it
+through `make-layers.py` like any other image.
 
 ### Run
 
@@ -162,19 +170,6 @@ Icons are read from Windows at run time, so nothing is bundled.
 ] }
 ```
 
-## Why this is the lightest design that still looks premium
-
-Windows already composites the wallpaper on every frame for free, so the cheapest live wallpaper is an ordinary one
-that changes once a minute. designyourwindows renders the full frame once when it starts, keeps only the strip of
-pixels behind the time and the widget panels in memory, and each minute redraws that strip and writes just those rows
-into the bitmap in one file write: 38 ms of work, then the process sleeps on a kernel timer until the next minute
-boundary, with no polling. The frosted glass costs nothing at run time because it is cut from a blurred copy of your
-own wallpaper made once by `make-layers.py`; it reads as glass because it really is the image behind it. The dock is
-the only live surface, and its blur is done by the desktop compositor on the GPU, not by this process. Static mode goes
-further and leaves nothing running at all. What makes it look premium is not effects but care: a real depth cut,
-Windows' own variable typeface on a consistent type scale, hairline edges and shadows, colour taken from the image,
-and widgets that only show data that is true at the moment you see it.
-
 ## Measurements
 
 Idle cost after start-up, measured on an Acer Nitro AN517-55 (Intel Core i7-12700H, 20 logical processors, 32 GB),
@@ -213,14 +208,6 @@ Each test set a new or rewritten bitmap with `SPI_SETDESKWALLPAPER` while a hidd
 So the first wallpaper set of a run persists it and tells other apps (both flags), and every per-minute update after
 it passes `0`: the desktop repaints, nothing is written to the registry and no window is woken.
 
-## Screenshots
-
-Every image in `docs/screens/` was made on this machine from art drawn by code: the mountain is
-`make-layers.py --sample`, cut by the same pipeline you run. The icons are Windows' own system and inbox app icons,
-read at run time. The desktop images are frames the exe rendered with `--render`; `dock-preview.png` is the exe's
-preview of the dock (the same icons, sizes and tint over the glass), because the live dock was checked on a desktop
-with other windows behind it.
-
 ## Files
 
 | Path | What it is |
@@ -229,7 +216,7 @@ with other windows behind it.
 | `src/DesignYourWindows.cs`, `src/app.manifest` | the exe: compositor, minute engine, widgets, dock, install and uninstall |
 | `build.ps1` | builds `bin\designyourwindows.exe` with Windows' own C# compiler |
 | `config.json`, `dock.json` | examples to edit |
-| `docs/screens/` | the screenshots above |
+| `docs/screens/` | the images above: frames the exe rendered with `--render` from layers `make-layers.py` cut |
 | `docs/sweep.md` | the privacy and secrets sweep run before publishing |
 
 ## Credits and licence
