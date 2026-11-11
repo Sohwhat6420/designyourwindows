@@ -1,0 +1,13 @@
+{
+  "apps": [
+    { "name": "File Explorer", "path": "%WINDIR%\\explorer.exe" },
+    { "name": "Settings", "appId": "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel" },
+    { "name": "Terminal", "appId": "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App" },
+    { "name": "Notepad", "appId": "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App" },
+    { "name": "Calculator", "appId": "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" },
+    { "name": "Photos", "appId": "Microsoft.Windows.Photos_8wekyb3d8bbwe!App" },
+    { "name": "Paint", "appId": "Microsoft.Paint_8wekyb3d8bbwe!App" },
+    { "name": "Snipping Tool", "appId": "Microsoft.ScreenSketch_8wekyb3d8bbwe!App" },
+    { "name": "Task Manager", "path": "%WINDIR%\\System32\\Taskmgr.exe" }
+  ]
+}

@@ -1,0 +1,21 @@
+# Models are downloaded by you (see README); never committed
+models/
+*.onnx
+
+# Your own images and everything made from them
+images/
+layers/
+out/
+*.jpg
+*.jpeg
+*.webp
+!docs/screens/*.png
+
+# Build output
+bin/
+*.exe
+*.pdb
+
+# Python
+__pycache__/
+*.pyc

@@ -1,0 +1,25 @@
+{
+  "layers": "layers",
+  "clock": {
+    "format": "HH:mm",
+    "text": "",
+    "noClockFormat": "d MMMM",
+    "font": "Segoe UI Variable Display",
+    "weight": "Semibold",
+    "fontFile": "",
+    "ink": "",
+    "opacity": 0.92
+  },
+  "date": { "show": true, "format": "dddd d MMMM" },
+  "widgets": { "side": "right", "calendar": true, "battery": true, "weekStartsMonday": true },
+  "weather": {
+    "enabled": false,
+    "place": "Greenwich",
+    "latitude": 51.4779,
+    "longitude": -0.0015,
+    "units": "celsius",
+    "refreshMinutes": 30
+  },
+  "dock": { "enabled": true, "file": "dock.json", "backdrop": "acrylic" },
+  "advanced": { "minuteFlags": 0 }
+}
