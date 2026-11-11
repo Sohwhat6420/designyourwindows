@@ -1,0 +1,53 @@
+name: build
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the exe with Windows' own C# compiler
+        shell: pwsh
+        run: ./build.ps1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python packages
+        run: python -m pip install numpy opencv-python onnxruntime pillow
+
+      - name: Cache the two models
+        id: models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: models-birefnet-lite-dav2-small-v1
+      - name: Download the two models (first run only)
+        if: steps.models.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p models
+          curl -fsSL -o models/birefnet-lite.onnx https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx
+          curl -fsSL -o models/depth-anything-v2-small.onnx https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx
+
+      - name: Draw the sample and cut it into layers
+        run: |
+          python -I make-layers.py --sample sample.png --size 1920x1080
+          python -I make-layers.py sample.png --size 1920x1080
+
+      - name: Render one frame to a file (the wallpaper is left alone)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $p = Start-Process -FilePath .\bin\designyourwindows.exe -ArgumentList '--render','out\ci-frame.png','--time','2026-11-11T09:41' -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "render exited $($p.ExitCode)" }
+          if (-not (Test-Path out\ci-frame.png)) { throw 'no frame written' }
+          'frame: {0:N0} KB' -f ((Get-Item out\ci-frame.png).Length / 1KB)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-frame
+          path: out/ci-frame.png

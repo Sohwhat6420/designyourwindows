@@ -1,5 +1,11 @@
 # designyourwindows
 
+[![build](https://github.com/Sohwhat6420/designyourwindows/actions/workflows/build.yml/badge.svg)](https://github.com/Sohwhat6420/designyourwindows/actions/workflows/build.yml)
+![licence: MIT](https://img.shields.io/badge/licence-MIT-blue)
+![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
+![exe: 62 KB](https://img.shields.io/badge/exe-62%20KB-555)
+![idle CPU: 0.06% of one core](https://img.shields.io/badge/idle%20CPU-0.06%25%20of%20one%20core-2ea44f)
+
 A clock behind the subject of your own wallpaper, frosted-glass widgets and a macOS-style dock, for Windows 10 and 11.
 One 62 KB native exe and one Python script. No browser, no web view, no live-wallpaper engine: the wallpaper is an
 ordinary bitmap that Windows draws as it always does.
