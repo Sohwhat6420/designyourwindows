@@ -119,10 +119,12 @@ def ink_for(rgb, fg, c):
 
 def glass(rgb, W):
     """The plate behind frosted glass: a wide blur and a little extra colour, as the real material does."""
-    g = cv2.GaussianBlur(rgb, (0, 0), 34 * W / 1920)
-    hsv = cv2.cvtColor(g, cv2.COLOR_RGB2HSV).astype(np.float32)
-    hsv[..., 1] = np.clip(hsv[..., 1] * 1.35, 0, 255)
-    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+    g = cv2.GaussianBlur(rgb.astype(np.float32) / 255, (0, 0), 34 * W / 1920)
+    hsv = cv2.cvtColor(g, cv2.COLOR_RGB2HSV)  # float: no 8-bit steps before the final rounding
+    hsv[..., 1] = np.clip(hsv[..., 1] * 1.35, 0, 1)
+    out = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB) * 255
+    out += np.random.default_rng(0).normal(0, 1.1, out.shape)  # dither: a smooth blur would band in 8 bits
+    return np.clip(out + 0.5, 0, 255).astype(np.uint8)
 
 
 def cmd_layers(a, W, H):

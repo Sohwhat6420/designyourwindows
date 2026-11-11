@@ -55,10 +55,12 @@ namespace DesignYourWindows
             try
             {
                 if (a.Has("--uninstall")) return Install.Remove(cfg);
-                if (a.Has("--install")) return Install.Add(cfg, a.Has("--no-clock"), a.Has("--no-dock"));
+                // The one switch: "mode" in config.json, "minute" (default) or "static"; --static overrides it.
+                bool isStatic = a.Has("--static") || a.Has("--no-clock") || "static".Equals(cfg.Str("mode", "minute"), StringComparison.OrdinalIgnoreCase);
+                if (a.Has("--install")) return Install.Add(cfg, isStatic, a.Has("--no-dock"));
                 var r = new Renderer(cfg);
-                if (a.Value("--render") != null) return RenderToFile(cfg, r, a);
-                if (a.Has("--no-clock")) return Once(cfg, r);
+                if (a.Value("--render") != null) return RenderToFile(cfg, r, a, isStatic);
+                if (isStatic) return Once(cfg, r);
                 return Run(cfg, r, !a.Has("--no-dock") && cfg.Bool("dock.enabled", true), !a.Has("--no-apply"));
             }
             catch (Exception e) { Log("error: " + e); Say(e.Message); return 1; }
@@ -67,12 +69,14 @@ namespace DesignYourWindows
         const string Help =
 @"designyourwindows: depth-effect clock wallpaper, glass widgets and a dock.
 
-  designyourwindows.exe                 run: recompose the wallpaper every minute (and show the dock)
-  designyourwindows.exe --no-clock      render once with the static text and exit (no resident process)
-  designyourwindows.exe --no-dock       run without the dock
-  designyourwindows.exe --render F.png [--time 2026-11-11T09:41] [--dock-preview]
+  designyourwindows.exe                 run in the mode config.json names: minute or static
+                                        minute: redraw the time every minute (and show the dock)
+                                        static: draw your text once, set it, exit (nothing left running)
+  designyourwindows.exe --static        static mode whatever the config says
+  designyourwindows.exe --no-dock       minute mode without the dock
+  designyourwindows.exe --render F.png [--time 2026-11-11T09:41] [--dock-preview] [--static]
                                         write one frame to a file; leaves the wallpaper alone
-  designyourwindows.exe --install [--no-clock] [--no-dock]
+  designyourwindows.exe --install [--static] [--no-dock]
                                         start at sign-in (a per-user scheduled task) and start now
   designyourwindows.exe --uninstall     stop, remove the task, put the previous wallpaper back
   designyourwindows.exe --stop          stop a running copy
@@ -80,7 +84,7 @@ namespace DesignYourWindows
 
         // ---------- modes ----------
 
-        static int RenderToFile(Cfg cfg, Renderer r, Args a)
+        static int RenderToFile(Cfg cfg, Renderer r, Args a, bool isStatic)
         {
             DateTime now = DateTime.Now;
             string t = a.Value("--time");
@@ -88,7 +92,7 @@ namespace DesignYourWindows
             if (cfg.Bool("weather.enabled", false)) r.Weather = Weather.Fetch(cfg);
             List<DockApp> dock = a.Has("--dock-preview") ? DockApp.Load(cfg) : null;
             var sw = Stopwatch.StartNew();
-            using (Bitmap f = r.Compose(now, r.BigText(now, true), true, dock))
+            using (Bitmap f = r.Compose(now, r.BigText(now, !isStatic), !isStatic, dock, !isStatic))
             {
                 string path = Path.GetFullPath(a.Value("--render"));
                 f.Save(path, path.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase) ? ImageFormat.Bmp : ImageFormat.Png);
@@ -100,8 +104,8 @@ namespace DesignYourWindows
         static int Once(Cfg cfg, Renderer r)
         {
             DateTime now = DateTime.Now;
-            using (Bitmap f = r.Compose(now, r.BigText(now, false), false, null)) Wallpaper.Apply(cfg, f, true);
-            Log("rendered once (no clock)");
+            using (Bitmap f = r.Compose(now, r.BigText(now, false), false, null, false)) Wallpaper.Apply(f);
+            Log("static: rendered once");
             return 0;
         }
 
@@ -141,8 +145,8 @@ namespace DesignYourWindows
                             });
                         }
                         var sw = Stopwatch.StartNew();
-                        using (Bitmap f = r.Compose(now, r.BigText(now, true), true, null))
-                            if (apply) Wallpaper.Apply(cfg, f, first); else Wallpaper.Save(f);
+                        r.MinuteFrame(now, Wallpaper.FramePath);
+                        if (apply) Wallpaper.Set(cfg, first);
                         if (Verbose) Log("frame " + now.ToString("HH:mm:ss") + " in " + sw.ElapsedMilliseconds + " ms");
                         first = false;
                         Trim();
@@ -355,7 +359,6 @@ namespace DesignYourWindows
         Color ink;
         public volatile Weather Weather;
         readonly Dictionary<string, Glass> glassCache = new Dictionary<string, Glass>();
-        int cacheW, cacheH;
 
         class Glass { public Bitmap Bmp; public bool Dark; }
 
@@ -393,39 +396,180 @@ namespace DesignYourWindows
                 return new Bitmap(img);
         }
 
-        public Bitmap Compose(DateTime now, string big, bool live, List<DockApp> dockPreview)
+        /// <summary>Screen geometry for one frame: the layers cover the screen (they are made at screen size, so
+        /// this is normally 1:1), and the design-unit scale for widgets.</summary>
+        class Geo
         {
-            int W = Native.GetSystemMetrics(0), H = Native.GetSystemMetrics(1);
-            if (W != cacheW || H != cacheH) { foreach (Glass g0 in glassCache.Values) g0.Bmp.Dispose(); glassCache.Clear(); cacheW = W; cacheH = H; }
-            // Cover the screen with the layers (they are made at screen size, so this is normally 1:1).
-            float k = Math.Max(W / (float)LW, H / (float)LH);
-            float ox = (W - LW * k) / 2, oy = (H - LH * k) / 2;
-            var dst = new RectangleF(ox, oy, LW * k, LH * k);
-            float s = Native.UiScaleOfPrimary() * (float)cfg.Num("widgets.scale", 1.0);
+            public int W, H; public RectangleF Dst, Box; public float S;
+            public string Key { get { return W + "x" + H + "@" + S.ToString(CultureInfo.InvariantCulture); } }
+        }
 
-            var frame = new Bitmap(W, H, PixelFormat.Format24bppRgb);
-            using (Graphics g = Graphics.FromImage(frame))
+        Geo Measure()
+        {
+            var g = new Geo();
+            g.W = Native.GetSystemMetrics(0); g.H = Native.GetSystemMetrics(1);
+            float k = Math.Max(g.W / (float)LW, g.H / (float)LH);
+            float ox = (g.W - LW * k) / 2, oy = (g.H - LH * k) / 2;
+            g.Dst = new RectangleF(ox, oy, LW * k, LH * k);
+            g.Box = new RectangleF(ox + clockBox.X * k, oy + clockBox.Y * k, clockBox.Width * k, clockBox.Height * k);
+            g.S = Native.UiScaleOfPrimary() * (float)cfg.Num("widgets.scale", 1.0);
+            return g;
+        }
+
+        /// <summary>Draw a layer into a rectangle. At 1:1 (the usual case) it is a straight copy: GDI+'s bicubic filter
+        /// costs hundreds of milliseconds on a full screen even when nothing is scaled.</summary>
+        static void Layer(Graphics g, Image img, RectangleF r)
+        {
+            if (Math.Abs(r.Width - img.Width) < 0.5f && Math.Abs(r.Height - img.Height) < 0.5f && r.X == (int)r.X && r.Y == (int)r.Y)
             {
-                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                g.PixelOffsetMode = PixelOffsetMode.Half;
-                using (Bitmap plate = LoadImage(Path.Combine(layers, "plate.png"))) g.DrawImage(plate, dst);
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.TextRenderingHint = TextRenderingHint.AntiAlias;
-                if (!string.IsNullOrEmpty(big))
-                {
-                    var box = new RectangleF(ox + clockBox.X * k, oy + clockBox.Y * k, clockBox.Width * k, clockBox.Height * k);
-                    DrawBig(g, big, box, now);
-                }
-                using (Bitmap fg = LoadImage(Path.Combine(layers, "fg.png"))) g.DrawImage(fg, dst);
-                Widgets(g, now, live, s, W, H, dst);
-                if (dockPreview != null && dockPreview.Count > 0) DockPreview(g, dockPreview, s, W, H, dst);
+                InterpolationMode im = g.InterpolationMode; PixelOffsetMode pm = g.PixelOffsetMode; CompositingQuality cq = g.CompositingQuality;
+                g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                g.PixelOffsetMode = PixelOffsetMode.None;
+                g.CompositingQuality = CompositingQuality.HighSpeed;
+                g.DrawImage(img, new Rectangle((int)r.X, (int)r.Y, img.Width, img.Height), 0, 0, img.Width, img.Height, GraphicsUnit.Pixel);
+                g.InterpolationMode = im; g.PixelOffsetMode = pm; g.CompositingQuality = cq;
             }
+            else g.DrawImage(img, r);
+        }
+
+        static Graphics Gfx(Bitmap b)
+        {
+            Graphics g = Graphics.FromImage(b);
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.Half;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.AntiAlias;
+            return g;
+        }
+
+        /// <summary>One whole frame, drawn from scratch: plate, text, cut-out, glass widgets (and a dock preview).
+        /// Used for --render and the static mode; the minute mode only redraws what changes (MinuteFrame).</summary>
+        public Bitmap Compose(DateTime now, string big, bool live, List<DockApp> dockPreview, bool showDate)
+        {
+            Geo geo = Measure();
+            var frame = new Bitmap(geo.W, geo.H, PixelFormat.Format24bppRgb);
+            using (Graphics g = Gfx(frame))
+            {
+                using (Bitmap plate = LoadImage(Path.Combine(layers, "plate.png"))) Layer(g, plate, geo.Dst);
+                if (!string.IsNullOrEmpty(big)) DrawBig(g, big, geo.Box, now, showDate);
+                using (Bitmap fg = LoadImage(Path.Combine(layers, "fg.png"))) Layer(g, fg, geo.Dst);
+                foreach (Slot sl in Slots(now, live, geo))
+                {
+                    sl.Dark = Panel(g, sl.R, geo.S, geo.Dst, 22 * geo.S);
+                    Content(g, sl, sl.R, now, geo.S);
+                }
+                if (dockPreview != null && dockPreview.Count > 0) DockPreview(g, dockPreview, geo.S, geo.W, geo.H, geo.Dst);
+            }
+            DropGlass();
             return frame;
         }
 
+        // ---- the minute engine: bake everything that does not change once, then patch only the changed pixels ----
+
+        string baseKey;
+        Rectangle band;                 // the strip that holds the date and the time
+        Bitmap bandBase, bandFg;        // that strip as baked (plate, cut-out, glass) and the cut-out alone
+        List<Slot> baseSlots;
+        readonly List<Bitmap> slotBase = new List<Bitmap>();
+
+        /// <summary>Bring the frame file up to the minute. The first call (or any change of screen, widgets or layers)
+        /// bakes the whole frame once; after that only the time strip and the widget panels are redrawn, and only their
+        /// rows are written into the bitmap file: a few hundred KB a minute instead of the whole screen.</summary>
+        public void MinuteFrame(DateTime now, string path)
+        {
+            var sw = Stopwatch.StartNew();
+            Geo geo = Measure();
+            List<Slot> slots = Slots(now, true, geo);
+            var key = new StringBuilder(geo.Key);
+            foreach (Slot sl in slots) key.Append("|" + sl.Kind + sl.R);
+            foreach (string f in new[] { "plate.png", "fg.png", "glass.png" }) key.Append("|" + File.GetLastWriteTimeUtc(Path.Combine(layers, f)).Ticks);
+            long expect = 54 + (long)((geo.W * 3 + 3) / 4 * 4) * geo.H;
+            if (key.ToString() != baseKey || !File.Exists(path) || new FileInfo(path).Length != expect)
+            {
+                BakeBase(now, geo, slots, path);
+                baseKey = key.ToString();
+            }
+            long tPrep = sw.ElapsedMilliseconds;
+            var patches = new List<KeyValuePair<Rectangle, Bitmap>>();
+            try
+            {
+                var strip = new Bitmap(bandBase);
+                patches.Add(new KeyValuePair<Rectangle, Bitmap>(band, strip));
+                using (Graphics g = Gfx(strip))
+                {
+                    // Never touch a widget, even where the strip overlaps one.
+                    g.SetClip(new Rectangle(0, 0, strip.Width, strip.Height));
+                    foreach (Slot sl in baseSlots)
+                    {
+                        RectangleF x = sl.R; x.Inflate(24 * geo.S, 24 * geo.S); x.Offset(-band.X, -band.Y);
+                        g.ExcludeClip(Rectangle.Round(x));
+                    }
+                    RectangleF box = geo.Box; box.Offset(-band.X, -band.Y);
+                    DrawBig(g, BigText(now, true), box, now, true);
+                    Layer(g, bandFg, new RectangleF(0, 0, bandFg.Width, bandFg.Height)); // the cut-out's colour is the plate's, so this is exact
+                }
+                for (int i = 0; i < baseSlots.Count; i++)
+                {
+                    Slot sl = baseSlots[i];
+                    Rectangle ir = Outer(sl.R);
+                    var b = new Bitmap(slotBase[i]);
+                    patches.Add(new KeyValuePair<Rectangle, Bitmap>(ir, b));
+                    using (Graphics g = Gfx(b))
+                    {
+                        RectangleF r = sl.R; r.Offset(-ir.X, -ir.Y);
+                        Content(g, sl, r, now, geo.S);
+                    }
+                }
+                long tDraw = sw.ElapsedMilliseconds;
+                Bmp.Patch(path, patches); // one open and one close: a virus scanner looks at the file once, not per region
+                if (Program.Verbose) Program.Log("  prep " + tPrep + " ms, drawn " + (tDraw - tPrep) + " ms, written " + (sw.ElapsedMilliseconds - tDraw) + " ms");
+            }
+            finally { foreach (var p in patches) p.Value.Dispose(); }
+        }
+
+        static Rectangle Outer(RectangleF r) { return Rectangle.FromLTRB((int)Math.Floor(r.X), (int)Math.Floor(r.Y), (int)Math.Ceiling(r.Right), (int)Math.Ceiling(r.Bottom)); }
+
+        void BakeBase(DateTime now, Geo geo, List<Slot> slots, string path)
+        {
+            if (bandBase != null) { bandBase.Dispose(); bandFg.Dispose(); }
+            foreach (Bitmap b in slotBase) b.Dispose();
+            slotBase.Clear();
+            using (var frame = new Bitmap(geo.W, geo.H, PixelFormat.Format24bppRgb))
+            {
+                using (Bitmap fg = LoadImage(Path.Combine(layers, "fg.png")))
+                {
+                    using (Graphics g = Gfx(frame))
+                    {
+                        using (Bitmap plate = LoadImage(Path.Combine(layers, "plate.png"))) Layer(g, plate, geo.Dst);
+                        Layer(g, fg, geo.Dst);
+                        foreach (Slot sl in slots) sl.Dark = Panel(g, sl.R, geo.S, geo.Dst, 22 * geo.S);
+                    }
+                    // the strip: the clock box with room for the date above it and a margin each side
+                    RectangleF bx = geo.Box;
+                    band = Rectangle.Intersect(Rectangle.FromLTRB((int)(bx.X - bx.Width * 0.15f), (int)(bx.Y - bx.Height * 0.55f),
+                                                                  (int)Math.Ceiling(bx.Right + bx.Width * 0.15f), (int)Math.Ceiling(bx.Bottom + bx.Height * 0.12f)),
+                                               new Rectangle(0, 0, geo.W, geo.H));
+                    bandBase = frame.Clone(band, PixelFormat.Format24bppRgb);
+                    bandFg = new Bitmap(band.Width, band.Height, PixelFormat.Format32bppPArgb);
+                    using (Graphics g = Gfx(bandFg))
+                        Layer(g, fg, new RectangleF(geo.Dst.X - band.X, geo.Dst.Y - band.Y, geo.Dst.Width, geo.Dst.Height));
+                }
+                foreach (Slot sl in slots) slotBase.Add(frame.Clone(Rectangle.Intersect(Outer(sl.R), new Rectangle(0, 0, geo.W, geo.H)), PixelFormat.Format24bppRgb));
+                baseSlots = slots;
+                string tmp = path + ".tmp";
+                frame.Save(tmp, ImageFormat.Bmp);
+                File.Copy(tmp, path, true);
+                File.Delete(tmp);
+            }
+            DropGlass();
+            Program.Log("baked the base frame (" + geo.W + "x" + geo.H + ")");
+        }
+
+        void DropGlass() { foreach (Glass g0 in glassCache.Values) g0.Bmp.Dispose(); glassCache.Clear(); }
+
         // ---- the big text ----
 
-        void DrawBig(Graphics g, string text, RectangleF box, DateTime now)
+        void DrawBig(Graphics g, string text, RectangleF box, DateTime now, bool showDate)
         {
             FontFamily fam;
             string file = cfg.PathOf("clock.fontFile", "");
@@ -466,7 +610,7 @@ namespace DesignYourWindows
             }
 
             // The date sits above the time and is never covered, as on a lock screen.
-            if (cfg.Bool("date.show", true) && cfg.Str("clock.text", "").Length == 0)
+            if (showDate && cfg.Bool("date.show", true) && cfg.Str("clock.text", "").Length == 0)
             {
                 string d = now.ToString(cfg.Str("date.format", "dddd d MMMM"), CultureInfo.CurrentCulture);
                 FontFamily df = Fonts.Get("Segoe UI Variable Display", "Semibold");
@@ -541,33 +685,43 @@ namespace DesignYourWindows
 
         // ---- widgets ----
 
-        void Widgets(Graphics g, DateTime now, bool live, float s, int W, int H, RectangleF dst)
+        class Slot { public RectangleF R; public int Kind; public bool Dark; } // 0 calendar, 1 battery, 2 weather
+
+        /// <summary>Where the widgets go: a medium calendar, then a row of small ones under it, against the chosen edge.
+        /// Battery and weather only appear with live data (never in a frame that is drawn once and left).</summary>
+        List<Slot> Slots(DateTime now, bool live, Geo geo)
         {
+            var list = new List<Slot>();
+            float s = geo.S;
             bool right = !"left".Equals(cfg.Str("widgets.side", "right"), StringComparison.OrdinalIgnoreCase);
-            float m = 28 * s, gap = 16 * s, sm = 158 * s;
+            float m = 28 * s, gap = 16 * s, sm = 161 * s; // two small widgets and their gap span one medium one
             float y = m;
             if (cfg.Bool("widgets.calendar", true))
             {
                 float cw = 338 * s, ch = 158 * s;
-                var r = new RectangleF(right ? W - m - cw : m, y, cw, ch);
-                Calendar(g, r, now, s, dst);
+                list.Add(new Slot { R = new RectangleF(right ? geo.W - m - cw : m, y, cw, ch), Kind = 0 });
                 y += ch + gap;
             }
             var smalls = new List<int>();
             Native.SYSTEM_POWER_STATUS ps;
-            bool battery = live && cfg.Bool("widgets.battery", true) && Native.GetSystemPowerStatus(out ps) && (ps.BatteryFlag & 128) == 0 && ps.BatteryLifePercent <= 100;
+            if (live && cfg.Bool("widgets.battery", true) && Native.GetSystemPowerStatus(out ps) && (ps.BatteryFlag & 128) == 0 && ps.BatteryLifePercent <= 100) smalls.Add(1);
             Weather wx = Weather;
-            bool weather = live && cfg.Bool("weather.enabled", false) && wx != null && (now - wx.Read).TotalHours < 3;
-            if (battery) smalls.Add(0);
-            if (weather) smalls.Add(1);
+            if (live && cfg.Bool("weather.enabled", false) && wx != null && (now - wx.Read).TotalHours < 3) smalls.Add(2);
             float total = smalls.Count * sm + Math.Max(0, smalls.Count - 1) * gap;
-            float x = right ? W - m - total : m;
+            float x = right ? geo.W - m - total : m;
             foreach (int kind in smalls)
             {
-                var r = new RectangleF(x, y, sm, sm);
-                if (kind == 0) Battery(g, r, s, dst); else WeatherPanel(g, r, s, dst, wx);
+                list.Add(new Slot { R = new RectangleF(x, y, sm, sm), Kind = kind });
                 x += sm + gap;
             }
+            return list;
+        }
+
+        void Content(Graphics g, Slot sl, RectangleF r, DateTime now, float s)
+        {
+            if (sl.Kind == 0) Calendar(g, r, now, s, sl.Dark);
+            else if (sl.Kind == 1) Battery(g, r, s, sl.Dark);
+            else WeatherPanel(g, r, s, sl.Dark, Weather);
         }
 
         struct Pal
@@ -590,9 +744,9 @@ namespace DesignYourWindows
         static FontFamily TextF(string w) { return Fonts.Get("Segoe UI Variable Text", w); }
         static FontFamily Small(string w) { return Fonts.Get("Segoe UI Variable Small", w); }
 
-        void Calendar(Graphics g, RectangleF r, DateTime now, float s, RectangleF dst)
+        void Calendar(Graphics g, RectangleF r, DateTime now, float s, bool dark)
         {
-            Pal p = Pal.For(Panel(g, r, s, dst, 22 * s));
+            Pal p = Pal.For(dark);
             CultureInfo ci = CultureInfo.CurrentCulture;
             float pad = 16 * s;
             float lx = r.X + pad + 2 * s;
@@ -644,11 +798,11 @@ namespace DesignYourWindows
             return (d.AddDays(4 - day).DayOfYear - 1) / 7 + 1;
         }
 
-        void Battery(Graphics g, RectangleF r, float s, RectangleF dst)
+        void Battery(Graphics g, RectangleF r, float s, bool dark)
         {
             Native.SYSTEM_POWER_STATUS ps;
             Native.GetSystemPowerStatus(out ps);
-            Pal p = Pal.For(Panel(g, r, s, dst, 22 * s));
+            Pal p = Pal.For(dark);
             float pad = 16 * s;
             int pct = ps.BatteryLifePercent;
             bool charging = (ps.BatteryFlag & 8) != 0, ac = ps.ACLineStatus == 1;
@@ -671,9 +825,10 @@ namespace DesignYourWindows
             Typo.TextBase(g, status, TextF("Semibold"), 12 * s, p.Secondary, cx, r.Bottom - pad - 1 * s, StringAlignment.Center);
         }
 
-        void WeatherPanel(Graphics g, RectangleF r, float s, RectangleF dst, Weather w)
+        void WeatherPanel(Graphics g, RectangleF r, float s, bool dark, Weather w)
         {
-            Pal p = Pal.For(Panel(g, r, s, dst, 22 * s));
+            if (w == null) return;
+            Pal p = Pal.For(dark);
             float pad = 16 * s, lx = r.X + pad + 2 * s;
             CultureInfo ci = CultureInfo.CurrentCulture;
             string place = cfg.Str("weather.place", "");
@@ -705,6 +860,45 @@ namespace DesignYourWindows
         }
     }
 
+    static class Bmp
+    {
+        /// <summary>Write one rectangle of pixels into a 24-bit BMP file in place: only those rows are touched.</summary>
+        public static void Patch(string path, List<KeyValuePair<Rectangle, Bitmap>> parts)
+        {
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete))
+            {
+                var h = new byte[54];
+                if (fs.Read(h, 0, 54) != 54 || h[0] != 'B' || h[1] != 'M') throw new InvalidDataException("not a BMP: " + path);
+                int off = BitConverter.ToInt32(h, 10), w = BitConverter.ToInt32(h, 18), ht = BitConverter.ToInt32(h, 22);
+                if (BitConverter.ToInt16(h, 28) != 24) throw new InvalidDataException("not a 24-bit BMP: " + path);
+                int H = Math.Abs(ht), stride = (w * 3 + 3) / 4 * 4;
+                foreach (var part in parts) Write(fs, off, w, ht, stride, part.Key, part.Value);
+            }
+        }
+
+        static void Write(FileStream fs, int off, int w, int ht, int stride, Rectangle rect, Bitmap src)
+        {
+            {
+                int H = Math.Abs(ht);
+                rect.Intersect(new Rectangle(0, 0, w, H));
+                if (rect.Width <= 0 || rect.Height <= 0) return;
+                BitmapData d = src.LockBits(new Rectangle(0, 0, rect.Width, rect.Height), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+                try
+                {
+                    var row = new byte[rect.Width * 3];
+                    for (int y = 0; y < rect.Height; y++)
+                    {
+                        Marshal.Copy(new IntPtr(d.Scan0.ToInt64() + (long)y * d.Stride), row, 0, row.Length);
+                        int fileRow = ht > 0 ? H - 1 - (rect.Y + y) : rect.Y + y; // BMPs are usually stored bottom-up
+                        fs.Seek(off + (long)fileRow * stride + rect.X * 3, SeekOrigin.Begin);
+                        fs.Write(row, 0, row.Length);
+                    }
+                }
+                finally { src.UnlockBits(d); }
+            }
+        }
+    }
+
     static class Typo
     {
         public static GraphicsPath Round(RectangleF r, float rad)
@@ -722,10 +916,20 @@ namespace DesignYourWindows
         static float Ascent(FontFamily f, FontStyle st, float px) { return px * f.GetCellAscent(st) / f.GetEmHeight(st); }
         const float Cap = 0.70f; // Segoe's cap and figure height, as a share of the em
 
+        // Making a Font from a variable face costs milliseconds each time; a frame uses about a dozen distinct ones.
+        static readonly Dictionary<string, Font> fonts = new Dictionary<string, Font>();
+        static Font FontOf(FontFamily f, float px, FontStyle st)
+        {
+            string k = f.Name + "|" + px.ToString(CultureInfo.InvariantCulture) + "|" + st;
+            Font font;
+            if (!fonts.TryGetValue(k, out font)) { font = new Font(f, px, st, GraphicsUnit.Pixel); fonts[k] = font; }
+            return font;
+        }
+
         /// <summary>Draw with the baseline at y.</summary>
         public static void TextBase(Graphics g, string s, FontFamily f, FontStyle st, float px, Color c, float x, float y, StringAlignment a)
         {
-            using (var font = new Font(f, px, st, GraphicsUnit.Pixel))
+            Font font = FontOf(f, px, st);
             using (var b = new SolidBrush(c))
             using (var sf = (StringFormat)StringFormat.GenericTypographic.Clone())
             {
@@ -815,26 +1019,31 @@ namespace DesignYourWindows
 
         public static string FramePath { get { return Path.Combine(Program.StateDir, "wallpaper.bmp"); } }
 
-        public static void Save(Bitmap frame)
+        /// <summary>Static mode: write the whole frame once and hand it to Windows (persisted, other apps told).</summary>
+        public static void Apply(Bitmap frame)
         {
             string tmp = FramePath + ".tmp";
             frame.Save(tmp, ImageFormat.Bmp);
             File.Copy(tmp, FramePath, true);
             File.Delete(tmp);
+            Set(null, true);
         }
 
-        /// <summary>Write the frame and hand it to Windows. The first call of a run persists it and tells other apps;
-        /// the per-minute calls after it only repaint (no registry write, no WM_SETTINGCHANGE broadcast to every window).</summary>
-        public static void Apply(Cfg cfg, Bitmap frame, bool first)
+        /// <summary>Hand the frame file to Windows. The first call of a run persists it and tells other apps; the
+        /// per-minute calls after it pass no flags: measured, they still repaint (Windows re-reads a rewritten file at
+        /// the same path) but write nothing to the registry and send no WM_SETTINGCHANGE to every window.</summary>
+        public static void Set(Cfg cfg, bool first)
         {
-            if (first) Backup();
-            Save(frame);
-            uint flags = first ? (SPIF_UPDATEINIFILE | SPIF_SENDCHANGE) : (uint)cfg.Num("advanced.minuteFlags", 0);
-            if (first) using (RegistryKey k = Registry.CurrentUser.OpenSubKey(DesktopKey, true))
+            if (first)
+            {
+                Backup();
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(DesktopKey, true))
                 {
                     k.SetValue("WallpaperStyle", "10"); // fill: the frame is already screen-sized
                     k.SetValue("TileWallpaper", "0");
                 }
+            }
+            uint flags = first ? (SPIF_UPDATEINIFILE | SPIF_SENDCHANGE) : (uint)(cfg == null ? 0 : cfg.Num("advanced.minuteFlags", 0));
             if (!Native.SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, FramePath, flags))
                 Program.Log("SystemParametersInfo failed: " + Marshal.GetLastWin32Error());
         }
