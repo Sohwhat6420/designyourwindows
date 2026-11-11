@@ -1,4 +1,5 @@
 {
+  "mode": "minute",
   "layers": "layers",
   "clock": {
     "format": "HH:mm",
@@ -11,7 +12,7 @@
     "opacity": 0.92
   },
   "date": { "show": true, "format": "dddd d MMMM" },
-  "widgets": { "side": "right", "calendar": true, "battery": true, "weekStartsMonday": true },
+  "widgets": { "side": "right", "calendar": true, "battery": true, "weekStartsMonday": true, "scale": 1.0 },
   "weather": {
     "enabled": false,
     "place": "Greenwich",
@@ -20,6 +21,6 @@
     "units": "celsius",
     "refreshMinutes": 30
   },
-  "dock": { "enabled": true, "file": "dock.json", "backdrop": "acrylic" },
+  "dock": { "enabled": true, "file": "dock.json", "backdrop": "acrylic", "scale": 1.0 },
   "advanced": { "minuteFlags": 0 }
 }
